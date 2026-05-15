@@ -4,7 +4,7 @@ import re
 import logging
 import os
 import json
-from normalizer import normalizer
+from app.normalizer import normalizer
 import google.generativeai as genai
 from dotenv import load_dotenv
 

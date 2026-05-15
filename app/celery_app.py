@@ -11,7 +11,7 @@ celery_app = Celery(
     "ats_worker",
     broker=CELERY_BROKER_URL,
     backend=CELERY_RESULT_BACKEND,
-    include=["tasks"] # Tell celery where to find the tasks
+    include=["app.tasks"] # Tell celery where to find the tasks
 )
 
 # Optional configuration

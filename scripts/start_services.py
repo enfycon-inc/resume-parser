@@ -42,7 +42,7 @@ def main():
 
     # 3. Start Celery Worker (Force fresh start)
     print("[+] Starting Celery Worker...")
-    run_in_new_window("ATS-Worker", f'"{sys.executable}" -m celery -A tasks worker --loglevel=info -P solo')
+    run_in_new_window("ATS-Worker", f'"{sys.executable}" -m celery -A app.celery_app worker --loglevel=info -P solo')
 
     print("\n[SUCCESS] All services restarted!")
     print("---------------------------")

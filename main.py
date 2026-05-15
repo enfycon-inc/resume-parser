@@ -1,10 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 import logging
-from extractor import ResumeExtractor
-from parser import ResumeParser
-from embeddings import EmbeddingService
-from database import save_resume, init_db, get_all_resumes, check_existing_hash
+from app.extractor import ResumeExtractor
+from app.parser import ResumeParser
+from app.embeddings import EmbeddingService
+from app.database import save_resume, init_db, get_all_resumes, check_existing_hash
 from sentence_transformers import util
 import torch
 import hashlib
@@ -12,7 +12,7 @@ import base64
 import json
 import re
 from celery.result import AsyncResult
-from tasks import process_resume_task
+from app.tasks import process_resume_task
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO)
@@ -98,7 +98,7 @@ async def search_candidates(query: str = None, keywords: str = None, top_k: int 
     if query:
         try:
             query_vector = embedding_service.generate_embedding(query)
-            from database import semantic_search_production
+            from app.database import semantic_search_production
             # Fetch a larger set to allow for keyword filtering
             results = semantic_search_production(query_vector, threshold, limit=top_k * 5)
             logger.info(f"Semantic search found {len(results)} initial candidates.")
@@ -107,7 +107,7 @@ async def search_candidates(query: str = None, keywords: str = None, top_k: int 
             raise HTTPException(status_code=500, detail=str(e))
     else:
         # Fallback to all if no JD query
-        from database import get_all_resumes
+        from app.database import get_all_resumes
         all_recs = get_all_resumes()
         results = []
         for r in all_recs:
@@ -140,7 +140,7 @@ async def search_candidates(query: str = None, keywords: str = None, top_k: int 
         else:
             raw_keyword_list = [k.strip().lower() for k in clean_keywords.split() if k.strip()]
         
-        from normalizer import normalizer
+        from app.normalizer import normalizer
         search_groups = []
         for k in raw_keyword_list:
             group = [k]

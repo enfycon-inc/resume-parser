@@ -1,8 +1,8 @@
-from celery_app import celery_app
-from extractor import ResumeExtractor
-from parser import ResumeParser
-from embeddings import EmbeddingService
-from database import save_resume
+from app.celery_app import celery_app
+from app.extractor import ResumeExtractor
+from app.parser import ResumeParser
+from app.embeddings import EmbeddingService
+from app.database import save_resume
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # Initialize models globally so they load once when worker starts
 embedding_service = EmbeddingService()
 
-@celery_app.task(name="tasks.process_resume_task", bind=True)
+@celery_app.task(name="app.tasks.process_resume_task", bind=True)
 def process_resume_task(self, filename: str, content_b64: str, file_hash: str):
     """
     Background task to process a resume.
@@ -45,7 +45,7 @@ def process_resume_task(self, filename: str, content_b64: str, file_hash: str):
         emails = result.get("contact", {}).get("emails", [])
         primary_email = emails[0] if emails else None
         
-        from database import check_existing_email
+        from app.database import check_existing_email
         existing = check_existing_email(primary_email)
         if existing:
             logger.info(f"Duplicate candidate found by email: {primary_email}")

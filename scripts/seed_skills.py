@@ -1,4 +1,4 @@
-from database import SessionLocal, SkillCategory, SkillMaster, SkillAlias, init_db
+from app.database import SessionLocal, SkillCategory, SkillMaster, SkillAlias, init_db
 import logging
 
 logging.basicConfig(level=logging.INFO)
