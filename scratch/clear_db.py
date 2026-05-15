@@ -1,4 +1,4 @@
-from database import engine, ResumeRecord
+from app.database import engine, ResumeRecord
 from sqlalchemy import text
 import os
 

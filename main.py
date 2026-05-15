@@ -199,7 +199,7 @@ async def search_candidates(query: str = None, keywords: str = None, top_k: int 
 @app.get("/search", response_class=HTMLResponse)
 async def search_page():
     """Premium Search Dashboard UI."""
-    return """
+    return r"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -324,7 +324,7 @@ async def search_page():
 @app.get("/", response_class=HTMLResponse)
 async def home():
     """Simple UI for testing uploads."""
-    return """
+    return r"""
     <!DOCTYPE html>
     <html lang="en">
     <head>

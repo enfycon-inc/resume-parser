@@ -1,4 +1,4 @@
-from normalizer import normalizer
+from app.normalizer import normalizer
 
 def test_normalization():
     input_skills = ["ReactJS", "Aws", "NodeJS", "Js", "K8s", "Docker", "python"]

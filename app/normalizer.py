@@ -1,4 +1,4 @@
-from database import SessionLocal, SkillMaster, SkillAlias
+from app.database import SessionLocal, SkillMaster, SkillAlias
 import logging
 
 logger = logging.getLogger(__name__)

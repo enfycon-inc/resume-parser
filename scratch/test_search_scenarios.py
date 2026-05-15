@@ -6,8 +6,8 @@ import json
 # Add parent directory to path to import main and database
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_all_resumes
-from normalizer import normalizer
+from app.database import get_all_resumes
+from app.normalizer import normalizer
 
 def simulate_boolean_search(keywords):
     print(f"\n[TEST] Searching for: '{keywords}'")
