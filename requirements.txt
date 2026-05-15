@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+python-multipart
+pymupdf
+python-docx
+spacy
+pytesseract
+pillow
+python-magic-bin; sys_platform == 'win32'
+python-magic; sys_platform != 'win32'
+sentence-transformers
+psycopg2-binary
+sqlalchemy
+celery
+redis
+google-generativeai
+python-dotenv

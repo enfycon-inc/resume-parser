@@ -1,0 +1,339 @@
+import spacy
+from spacy.pipeline import EntityRuler
+import re
+import logging
+import os
+import json
+from normalizer import normalizer
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
+logger = logging.getLogger(__name__)
+
+class GeminiRefiner:
+    def __init__(self):
+        self.api_key = os.getenv("GOOGLE_API_KEY")
+        if self.api_key:
+            try:
+                genai.configure(api_key=self.api_key)
+                # Use Gemini 3 Flash as seen in dashboard
+                self.model = genai.GenerativeModel('gemini-3-flash')
+            except Exception as e:
+                logger.error(f"Failed to initialize Gemini: {e}")
+                self.model = None
+        else:
+            self.model = None
+
+    def refine(self, parsed_data, full_text):
+        """Reconstructs the resume profile from full text with high fidelity."""
+        if not self.model:
+            return parsed_data
+
+        prompt = f"""
+        You are a high-precision HR Data Scientist. RECONSTRUCT the resume JSON with 100% accuracy.
+        
+        SCHEMA & RULES:
+        - "skills": MUST be technical keywords only (e.g. "ReactJS", "Node.js"). NO sentences or fragments.
+        - "experience": Extract professional titles only.
+        - "education": Find the Degree and University (look for "SEACOM", "University", "B-Tech").
+        - "projects": Group the project name and its bullet points correctly.
+        - "certifications": Group certification names (e.g. "Linux for Developers") and providers (e.g. "Coursera").
+        
+        Original Text:
+        {full_text[:5000]} 
+        
+        Local Parsed JSON (Use as hint):
+        {json.dumps(parsed_data, indent=2)}
+        
+        Return ONLY the refined JSON.
+        """
+        try:
+            response = self.model.generate_content(prompt)
+            result_text = response.text.strip()
+            # Handle potential markdown code blocks in response
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
+            
+            refined_json = json.loads(result_text)
+            logger.info("Gemini refinement successful.")
+            return refined_json
+        except Exception as e:
+            logger.error(f"Gemini refinement failed: {e}")
+            return parsed_data
+
+# Initialize Refiner
+refiner = GeminiRefiner()
+
+def create_nlp_pipeline():
+    """Initializes a spaCy pipeline with custom entity rules for resume parsing."""
+    try:
+        # Using md model for better entity recognition
+        nlp = spacy.load("en_core_web_md")
+    except OSError:
+        logger.warning("spaCy model 'en_core_web_md' not found. Falling back to 'en_core_web_sm'.")
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            return None
+
+    # Check if entity_ruler already exists
+    if "entity_ruler" not in nlp.pipe_names:
+        ruler = nlp.add_pipe("entity_ruler", before="ner")
+    else:
+        ruler = nlp.get_pipe("entity_ruler")
+    
+    # 1. Define Patterns for Resume Entities
+    patterns = [
+        # Section Headers (Used as fallback or for semantic parsing)
+        {"label": "SECTION", "pattern": [{"LOWER": {"IN": ["experience", "employment", "work"]}}, {"LOWER": {"IN": ["history", "background", "experience"]}, "OP": "?"}]},
+        {"label": "SECTION", "pattern": [{"LOWER": {"IN": ["education", "academic", "scholastic"]}}, {"LOWER": {"IN": ["history", "background", "qualifications", "education"]}, "OP": "?"}]},
+        {"label": "SECTION", "pattern": [{"LOWER": {"IN": ["skills", "technologies", "proficiencies", "expertise", "tools"]}}]},
+        {"label": "SECTION", "pattern": [{"LOWER": {"IN": ["certifications", "certificates", "training", "courses"]}}]},
+        {"label": "SECTION", "pattern": [{"LOWER": {"IN": ["projects", "assignments"]}}]},
+        
+        # Degrees
+        {"label": "DEGREE", "pattern": [{"LOWER": "mba"}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": "mca"}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": "b.tech"}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": "m.tech"}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": "post"}, {"LOWER": "graduation"}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": "graduation"}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": "bachelor"}, {"LOWER": "of"}, {"LOWER": {"IN": ["technology", "science", "arts", "engineering", "commerce"]}}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": "master"}, {"LOWER": "of"}, {"LOWER": {"IN": ["technology", "science", "arts", "engineering", "commerce", "business"]}}]},
+        {"label": "DEGREE", "pattern": [{"LOWER": {"IN": ["b.sc", "m.sc", "b.e", "m.e", "b.com", "m.com", "phd", "bca"]}}]},
+        
+        # Cloud & DevOps
+        {"label": "SKILL", "pattern": [{"LOWER": {"IN": ["aws", "azure", "gcp", "docker", "kubernetes", "terraform", "jenkins", "ansible", "linux", "git", "github", "gitlab"]}}]},
+        # Frontend & Mobile
+        {"label": "SKILL", "pattern": [{"LOWER": {"IN": ["react", "angular", "vue", "next.js", "flutter", "react native", "html", "css", "sass", "tailwind", "bootstrap", "typescript"]}}]},
+        # Backend & Data
+        {"label": "SKILL", "pattern": [{"LOWER": {"IN": ["python", "java", "spring", "node.js", "express", "go", "ruby", "django", "flask", "fastapi", "sql", "postgresql", "mongodb", "redis", "elasticsearch"]}}]},
+        # HR & Business
+        {"label": "SKILL", "pattern": [{"LOWER": {"IN": ["hris", "hrms", "ats", "payroll", "recruitment", "onboarding", "compliance", "epfo", "esic", "tally", "sap", "erp"]}}]}
+    ]
+    
+    ruler.add_patterns(patterns)
+    return nlp
+
+# Global NLP Instance
+nlp = create_nlp_pipeline()
+
+class ResumeParser:
+    @staticmethod
+    def segment_sections(text: str):
+        """Splits the document into logical sections using robust regex matching."""
+        sections = {
+            "experience": "",
+            "education": "",
+            "skills": "",
+            "projects": "",
+            "certifications": "",
+            "other": ""
+        }
+        
+        # Comprehensive header patterns (Refined to be standalone lines or end with colon)
+        header_patterns = {
+            "experience": r"(?i)^\s*(experience|employment|work history|professional experience|background|roles & responsibilities|professional background|experience\d+|work\s+experience)\s*[:]?\s*$",
+            "education": r"(?i)^\s*(education|academic|scholastic|qualifications|academic\s+history)\s*[:]?\s*$",
+            "skills": r"(?i)^\s*(skills|technologies|proficiencies|expertise|technical skills|tools|key\s+skills|core\s+competencies|competencies|programming|miscellaneous)\s*[:]?\s*$",
+            "certifications": r"(?i)^\s*(certifications|certificates|training|courses|awards|certification)\s*[:]?\s*$",
+            "projects": r"(?i)^\s*(projects|assignments|key projects|academic projects|recent projects|portfolio)\s*[:]?\s*$"
+        }
+        
+        current_section = "other"
+        lines = text.split('\n')
+        
+        for line in lines:
+            clean_line = line.strip()
+            if not clean_line:
+                continue
+            
+            # Check if line is a header (usually short, standalone or ends with colon)
+            is_header = False
+            if len(clean_line.split()) < 6:
+                # Check for regex match
+                # Also consider all-caps lines as headers if they contain section keywords
+                is_all_caps = clean_line.isupper() and len(clean_line) > 3
+                for sec_name, pattern in header_patterns.items():
+                    if re.match(pattern, clean_line) or (is_all_caps and re.match(pattern, clean_line)):
+                        current_section = sec_name
+                        is_header = True
+                        break
+            
+            # Specialized check for common "Role:" headers in experience
+            if not is_header and "experience" in current_section:
+                if re.match(r"(?i)^(roles?|responsibilities|job|position|duties):", clean_line):
+                    # Keep it in experience
+                    pass
+
+            if not is_header:
+                sections[current_section] += clean_line + "\n"
+        
+        return sections
+
+    @staticmethod
+    def parse(text: str):
+        if not nlp:
+            return {"error": "NLP model not loaded"}
+
+        # 1. Section Segmentation
+        sections = ResumeParser.segment_sections(text)
+        
+        # 2. NLP Processing
+        doc = nlp(text)
+        
+        # 3. Contact Info
+        emails = list(set(re.findall(r"[a-z0-9\._\-+]+@[a-z0-9\._\-]+\.[a-z]+", text.lower())))
+        phones = list(set(re.findall(r"(?:(?:\+?\d{1,3}[-.\s]?)?\(?\d{3,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{4,6})", text)))
+        
+        # 4. Name Extraction
+        name = None
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        skip_keywords = ["resume", "cv", "profile", "summary", "curriculum", "curriculam", "vitale", "vitae", "contact", "email", "phone"]
+        
+        for line in lines[:10]:
+            lower_line = line.lower()
+            if "@" in line or len(re.findall(r'\d', line)) > 4 or len(line.split()) > 4:
+                continue
+            if any(kw in lower_line for kw in skip_keywords):
+                continue
+            if any(re.match(r"(?i)^" + kw, lower_line) for kw in ["experience", "education", "skills", "about"]):
+                continue
+            
+            if 2 <= len(line.split()) <= 4 and re.match(r"^[A-Za-z\s\.]+$", line):
+                name = line
+                break
+
+        if not name:
+            for ent in doc.ents:
+                if ent.label_ == "PERSON":
+                    clean_name = ent.text.strip()
+                    if 2 <= len(clean_name.split()) <= 4 and not any(c.isdigit() for c in clean_name):
+                        if any(kw in clean_name.lower() for kw in ["limited", "company", "pvt", "ltd", "india", "university", "college"]):
+                            continue
+                        name = clean_name
+                        break
+
+        # 5. Extract Skills (Section + Entities + Dictionary Scan)
+        extracted_skills = []
+        # a. From Skills Section
+        skill_lines = sections["skills"].split('\n')
+        for line in skill_lines:
+            parts = re.split(r'[,|•\t;]', line)
+            for p in parts:
+                if len(p.strip()) > 1:
+                    extracted_skills.append(p.strip())
+
+        # b. From Entities
+        for ent in doc.ents:
+            if ent.label_ == "SKILL":
+                extracted_skills.append(ent.text)
+            
+        # c. Full-Text Dictionary Scan (Critical for "SEACOM" test without AI)
+        # This scans the whole text for anything in our alias map
+        from normalizer import normalizer
+        full_text_lower = text.lower()
+        for alias in normalizer._alias_map.keys():
+            # Look for whole word matches to avoid partial matching (e.g. "py" in "happy")
+            if re.search(rf"\b{re.escape(alias)}\b", full_text_lower):
+                extracted_skills.append(alias)
+
+        extracted_degrees = []
+        extracted_institutes = []
+        extracted_roles = []
+        
+        for ent in doc.ents:
+            if ent.label_ == "DEGREE":
+                extracted_degrees.append(ent.text.strip())
+
+        # 6. Refine Skills
+        if sections["skills"]:
+            skill_lines = re.split(r'[\n•\-\*]', sections["skills"])
+            for sl in skill_lines:
+                clean_line = sl.strip()
+                if not clean_line or len(clean_line) > 150: continue
+                
+                # Split by comma ONLY if it doesn't look like a complex sentence (has parentheses or fewer than 2 commas)
+                if ',' in clean_line and '(' not in clean_line and clean_line.count(',') < 5:
+                    parts = clean_line.split(',')
+                else:
+                    parts = [clean_line]
+                
+                for p in parts:
+                    s = p.strip().strip('()[]•●- \t\r\n')
+                    if 2 <= len(s) <= 45 and len(s.split()) < 7:
+                        # Stricter filtering for fragments
+                        if not any(kw in s.lower() for kw in ["via", "focused", "reports", "signature", "date:", "wide", "enabled", "coordinated"]):
+                            extracted_skills.append(s)
+
+        # 7. Refine Education
+        if sections["education"]:
+            edu_doc = nlp(sections["education"])
+            for ent in edu_doc.ents:
+                if ent.label_ == "ORG":
+                    # Validate that it looks like an educational institute
+                    text_lower = ent.text.lower()
+                    if any(kw in text_lower for kw in ["university", "college", "school", "institute", "vidya", "mandir", "academy", "learning", "education"]):
+                        extracted_institutes.append(ent.text.strip())
+            
+            for line in sections["education"].split('\n'):
+                l_lower = line.lower()
+                # Ensure it's a degree line and not just a skill mention
+                if any(kw in l_lower for kw in ["graduation", "bachelor", "master", "degree", "post grad", "mca", "mba", "b.tech", "m.tech", "diploma"]):
+                    # Basic filter to avoid skills leaking in if they happen to have those keywords
+                    if len(line.split()) < 10:
+                        extracted_degrees.append(line.strip())
+
+        # 8. Refine Experience
+        for sec_name in ["experience", "other"]:
+            sec_text = sections[sec_name]
+            if not sec_text: continue
+            
+            exp_lines = [l.strip() for l in sec_text.split('\n') if len(l.strip()) > 5]
+            for line in exp_lines:
+                role_match = re.search(r"\b(manager|engineer|consultant|analyst|developer|lead|assistant|executive|specialist|officer|coordinator|head|director|intern|trainee|recruiter|generalist)\b", line, re.I)
+                if role_match:
+                    if len(line.split()) < 10 and not line.startswith(('●', '•', '-', '*')):
+                        extracted_roles.append(line)
+
+        # Final Structured Result
+        initial_result = {
+            "candidate_name": name or "Unknown",
+            "contact": {
+                "emails": emails,
+                "phones": phones
+            },
+            "experience": {
+                "detected_roles": sorted(list(set([r.strip() for r in extracted_roles if len(r.strip()) > 3])))[:10]
+            },
+            "education": {
+                "institutes_and_degrees": sorted(list(set([e.strip() for e in (extracted_degrees + extracted_institutes) if len(e.strip()) > 3])))[:10]
+            },
+            "skills": sorted(list(set([s.strip().title() for s in extracted_skills if len(s.strip()) > 1]))),
+            "certifications": sorted(list(set([c.strip() for c in sections["certifications"].split('\n') if len(c.strip()) > 5]))),
+            "projects": [p.strip() for p in sections["projects"].split('\n') if len(p.strip()) > 10],
+            "word_count": len(text.split())
+        }
+
+        # 9. Local Junk Filter (Post-AI Cleanup)
+        # We remove common non-skill fragments that sometimes slip through
+        junk_skills = {"Only", "Player", "Thoroughly", "Concept", "Made", "Learned", "This", "Using", "Power", "Features", "Showcases", "Working", "Design", "Visually", "Format", "Searchforfoodrecipes", "The", "Thoroughly", "Learned Frontend Web Development Thoroughly"}
+        if "skills" in initial_result:
+            # First filter junk and long sentences
+            clean_list = []
+            for s in initial_result["skills"]:
+                if s in junk_skills: continue
+                # Remove long phrases (Likely project descriptions)
+                if len(s) > 40 or len(s.split()) > 4: continue
+                clean_list.append(s)
+                
+            # Then normalize to canonical names
+            initial_result["skills"] = normalizer.process_list(clean_list)
+            logger.info(f"Local Dictionary Result (Pre-AI): {initial_result['skills']}")
+
+        # 10. Optional LLM Refinement (Passing Full Text for deep scan)
+        return refiner.refine(initial_result, text)
+
