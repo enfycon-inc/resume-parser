@@ -93,7 +93,17 @@ def process_resume_task(self, filename: str, content_b64: str, file_hash: str, m
                 "message": f"Candidate with email {primary_email} already exists."
             }
 
-        db_id = save_resume(filename, result, vector, file_hash, raw_text=text, source="API Upload")
+        source_name = "API Upload"
+        if metadata and isinstance(metadata, dict):
+            prov = metadata.get("provider", "").lower()
+            if prov == "dice":
+                source_name = "Dice"
+            elif prov == "monster":
+                source_name = "Monster"
+            elif "source" in metadata:
+                source_name = metadata["source"]
+
+        db_id = save_resume(filename, result, vector, file_hash, raw_text=text, source=source_name)
 
         return {
             "status": "completed",

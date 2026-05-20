@@ -223,10 +223,18 @@ async def search_candidates(query: str = None, keywords: str = None, top_k: int 
                 res["work_authorization"] = candidate.work_authorization
                 res["location"] = candidate.raw_current_location
                 res["total_experience_years"] = candidate.total_experience_years
+                res["phone"] = candidate.phone
+                res["source"] = candidate.source
+                res["created_at"] = candidate.created_at.isoformat() if candidate.created_at else None
+                res["designation"] = candidate.raw_current_designation
             else:
                 res["work_authorization"] = None
                 res["location"] = None
                 res["total_experience_years"] = None
+                res["phone"] = None
+                res["source"] = "Direct Upload"
+                res["created_at"] = None
+                res["designation"] = None
     finally:
         db_session.close()
 
