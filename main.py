@@ -94,7 +94,28 @@ async def get_task_status(task_id: str):
     if task_result.ready():
         response["result"] = task_result.result
         
-    return response
+@app.post("/api/v1/parse-jd")
+async def parse_jd(payload: dict):
+    """Parse raw Job Description text to extract technical skills and info."""
+    text = payload.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    try:
+        from app.parser import JobDescriptionParser
+        parsed = JobDescriptionParser.parse(text)
+        return {
+            "success": True,
+            "primarySkills": parsed.get("primarySkills", []),
+            "secondarySkills": parsed.get("secondarySkills", []),
+            "jobTitle": parsed.get("jobTitle") or "Unknown",
+            "workAuthorization": parsed.get("work_authorization"),
+            "roles": parsed.get("roles", []),
+        }
+    except Exception as e:
+        logger.error(f"Failed to parse JD: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 @app.get("/api/v1/skills")
 async def list_skills_with_aliases():

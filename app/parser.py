@@ -533,3 +533,158 @@ class ResumeParser:
         
         return refined_result
 
+
+class JobDescriptionParser:
+    @staticmethod
+    def parse(text: str):
+        # 1. Local NLP & Section Segmentation (Ceipal Style)
+        lines = text.split('\n')
+        
+        required_lines = []
+        preferred_lines = []
+        current_section = "required" # default is required/core
+        
+        # Ceipal Header keywords
+        required_headers = ["required", "must have", "minimum", "essential", "responsibilities", "duties", "key skills", "requirements"]
+        preferred_headers = ["preferred", "nice to have", "desired", "plus", "optional", "pluses", "secondary", "bonus"]
+        
+        for line in lines:
+            clean = line.strip().lower()
+            if not clean:
+                continue
+            
+            # Check if line is a short section header
+            if len(clean.split()) < 5:
+                is_req = any(h in clean for h in required_headers)
+                is_pref = any(h in clean for h in preferred_headers)
+                
+                if is_pref:
+                    current_section = "preferred"
+                    continue
+                elif is_req:
+                    current_section = "required"
+                    continue
+            
+            if current_section == "required":
+                required_lines.append(line)
+            else:
+                preferred_lines.append(line)
+                
+        # If no preferred headers were found, split text 50/50 by lines (Ceipal Fallback)
+        if len(preferred_lines) == 0:
+            half = len(lines) // 2
+            required_lines = lines[:half]
+            preferred_lines = lines[half:]
+            
+        required_text = "\n".join(required_lines).lower()
+        preferred_text = "\n".join(preferred_lines).lower()
+        
+        # Extract skills for each zone
+        from app.normalizer import normalizer
+        primary_skills_set = set()
+        secondary_skills_set = set()
+        
+        # a. Dictionary Scan for Required Zone (Primary Skills)
+        for alias, canon in normalizer._alias_map.items():
+            if f" {alias} " in f" {required_text} " or f"\n{alias}\n" in f"\n{required_text}\n" or required_text.startswith(alias) or required_text.endswith(alias):
+                primary_skills_set.add(canon)
+                
+        # b. Dictionary Scan for Preferred Zone (Secondary Skills)
+        for alias, canon in normalizer._alias_map.items():
+            if f" {alias} " in f" {preferred_text} " or f"\n{alias}\n" in f"\n{preferred_text}\n" or preferred_text.startswith(alias) or preferred_text.endswith(alias):
+                if canon not in primary_skills_set:
+                    secondary_skills_set.add(canon)
+                    
+        # c. spaCy Match (distribute based on positional split)
+        if nlp:
+            doc = nlp(text)
+            for ent in doc.ents:
+                if ent.label_ == "SKILL":
+                    canon = normalizer.normalize(ent.text) or ent.text.title()
+                    # Check if entity index is in first half of the document text
+                    if ent.start_char < len(text) // 2:
+                        primary_skills_set.add(canon)
+                    else:
+                        if canon not in primary_skills_set:
+                            secondary_skills_set.add(canon)
+                            
+        local_primary = sorted(list(primary_skills_set))[:6]
+        local_secondary = sorted(list(secondary_skills_set))[:6]
+        
+        # Try to guess job title locally
+        local_title = "Unknown"
+        for line in lines[:4]:
+            clean_line = line.strip()
+            if len(clean_line.split()) < 8 and any(kw in clean_line.lower() for kw in ["engineer", "developer", "manager", "lead", "architect", "designer", "consultant"]):
+                local_title = clean_line
+                break
+                
+        # Try to detect work auth locally
+        local_work_auth = extract_work_authorization(text)
+        
+        result = {
+            "jobTitle": local_title,
+            "primarySkills": local_primary,
+            "secondarySkills": local_secondary,
+            "workAuthorization": local_work_auth,
+            "roles": []
+        }
+        
+        # 2. Gemini Refinement (if API Key is active)
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                
+                prompt = f"""
+                You are a high-precision ATS parsing engine (emulating Ceipal standard). Analyze the following Job Description (JD) and extract details:
+                
+                RULES:
+                - "primarySkills": Skills listed under "Required", "Must Have", or key responsibilities sections.
+                - "secondarySkills": Skills listed under "Preferred", "Desired", or "Nice to Have" sections.
+                - "jobTitle": Identify the target job title (e.g. Senior DevOps Engineer).
+                - "workAuthorization": If the JD mentions visa terms or requirements (like US Citizen, GC, H1B), specify it. Otherwise return null.
+                - "roles": Identify matching titles/roles.
+                
+                Job Description:
+                {text[:6000]}
+                
+                Return ONLY a JSON object with the keys "primarySkills", "secondarySkills", "jobTitle", "workAuthorization", and "roles". Do NOT include any markdown code formatting or extra text.
+                """
+                
+                response = model.generate_content(prompt)
+                res_text = response.text.strip()
+                if "```json" in res_text:
+                    res_text = res_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in res_text:
+                    res_text = res_text.split("```")[1].split("```")[0].strip()
+                    
+                ai_data = json.loads(res_text)
+                
+                # Merge and normalize
+                if isinstance(ai_data, dict):
+                    if ai_data.get("jobTitle"):
+                        result["jobTitle"] = ai_data["jobTitle"]
+                    if ai_data.get("workAuthorization"):
+                        result["workAuthorization"] = ai_data["workAuthorization"]
+                    
+                    if isinstance(ai_data.get("primarySkills"), list):
+                        primary_set = set(normalizer.process_list(ai_data["primarySkills"]))
+                        primary_set.update(local_primary)
+                        result["primarySkills"] = sorted(list(primary_set))[:8]
+                        
+                    if isinstance(ai_data.get("secondarySkills"), list):
+                        secondary_set = set(normalizer.process_list(ai_data["secondarySkills"]))
+                        secondary_set.update(local_secondary)
+                        secondary_set = secondary_set - set(result["primarySkills"])
+                        result["secondarySkills"] = sorted(list(secondary_set))[:8]
+                        
+                    if isinstance(ai_data.get("roles"), list):
+                        result["roles"] = ai_data["roles"]
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Gemini JD refinement failed: {e}")
+                
+        return result
