@@ -93,7 +93,8 @@ async def get_task_status(task_id: str):
     
     if task_result.ready():
         response["result"] = task_result.result
-        
+    return response
+
 @app.post("/api/v1/parse-jd")
 async def parse_jd(payload: dict):
     """Parse raw Job Description text to extract technical skills and info."""
