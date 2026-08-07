@@ -613,11 +613,22 @@ class JobDescriptionParser:
         
         # Try to guess job title locally
         local_title = "Unknown"
-        for line in lines[:4]:
-            clean_line = line.strip()
-            if len(clean_line.split()) < 8 and any(kw in clean_line.lower() for kw in ["engineer", "developer", "manager", "lead", "architect", "designer", "consultant"]):
-                local_title = clean_line
+        
+        # First pass: Look for explicit labels anywhere
+        import re
+        for line in lines:
+            match = re.match(r"(?i)^(?:role|job title|position)\s*:\s*(.+)", line.strip())
+            if match and match.group(1).strip():
+                local_title = match.group(1).strip()
                 break
+                
+        # Second pass: Fallback to top lines
+        if local_title == "Unknown":
+            for line in lines[:4]:
+                clean_line = line.strip()
+                if len(clean_line.split()) < 8 and any(kw in clean_line.lower() for kw in ["engineer", "developer", "manager", "lead", "architect", "designer", "consultant"]):
+                    local_title = clean_line
+                    break
                 
         # Try to detect work auth locally
         local_work_auth = extract_work_authorization(text)
