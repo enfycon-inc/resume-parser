@@ -553,10 +553,13 @@ class JobDescriptionParser:
             if not clean:
                 continue
             
+            # Clean markdown symbols (#, *, -, etc.) from line for header checking
+            clean_header = re.sub(r'^[#\*\-\s]+', '', clean).strip()
+            
             # Check if line is a short section header
-            if len(clean.split()) < 5:
-                is_req = any(h in clean for h in required_headers)
-                is_pref = any(h in clean for h in preferred_headers)
+            if len(clean_header.split()) < 6:
+                is_req = any(h in clean_header for h in required_headers)
+                is_pref = any(h in clean_header for h in preferred_headers)
                 
                 if is_pref:
                     current_section = "preferred"
@@ -570,12 +573,6 @@ class JobDescriptionParser:
             else:
                 preferred_lines.append(line)
                 
-        # If no preferred headers were found, split text 50/50 by lines (Ceipal Fallback)
-        if len(preferred_lines) == 0:
-            half = len(lines) // 2
-            required_lines = lines[:half]
-            preferred_lines = lines[half:]
-            
         required_text = "\n".join(required_lines).lower()
         preferred_text = "\n".join(preferred_lines).lower()
         
