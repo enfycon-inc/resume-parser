@@ -1,7 +1,8 @@
+import os
 from sqlalchemy import create_engine, text
 import logging
 
-DATABASE_URL = "postgresql://postgres:EWhbqnM6IWe5IJaV@db.zqpxnnsbbqdlhememsyj.supabase.co:5432/postgres"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
