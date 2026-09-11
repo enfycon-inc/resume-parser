@@ -5,88 +5,13 @@ import logging
 import os
 import json
 from app.normalizer import normalizer
-import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-class GeminiRefiner:
-    def __init__(self):
-        self.api_key = os.getenv("GOOGLE_API_KEY")
-        if self.api_key:
-            try:
-                genai.configure(api_key=self.api_key)
-                # Use a valid Gemini model
-                self.model = genai.GenerativeModel('gemini-2.5-flash')
-            except Exception as e:
-                logger.error(f"Failed to initialize Gemini: {e}")
-                self.model = None
-        else:
-            self.model = None
+# Note: 100% Offline NLP Parser (Google Gemini AI removed for zero-latency, local extraction)
 
-    def refine(self, parsed_data, full_text):
-        """Reconstructs the resume profile from full text with high fidelity."""
-        if not self.model:
-            return parsed_data
-
-        prompt = f"""
-        You are a high-precision HR Data Scientist. RECONSTRUCT the resume JSON with 100% accuracy.
-        
-        SCHEMA & RULES:
-        - "skills": MUST be technical keywords only.
-        - "skills_detailed": MUST be an array of objects: {{"name": "ReactJS", "years_of_experience": 3}}. Calculate years by cross-referencing where the skill was used in the experience timeline.
-        - "experience_detailed": MUST be an array of objects: {{"role": "Software Engineer", "company": "Google", "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "is_current": false}}. Use null for missing dates. Extract start/end dates strictly from the chronological work history.
-        - "education": Find the Degree and University.
-        - "projects": Group the project name and its bullet points correctly.
-        - "certifications": Group certification names and providers.
-        - "work_authorization": Detect and classify the candidate's US work authorization status. Map it strictly to one of: ["US Citizen", "Green Card", "H1B", "H4 EAD", "L2 EAD", "OPT EAD", "CPT", "TN Visa"] or null if not explicitly mentioned in the CV. Do NOT guess or assume if it is not explicitly stated.
-        
-        Original Text:
-        {full_text[:6000]} 
-        
-        Local Parsed JSON (Use as hint):
-        {json.dumps(parsed_data, indent=2)}
-        
-        Return ONLY the refined JSON.
-        """
-        try:
-            response = self.model.generate_content(prompt)
-            result_text = response.text.strip()
-            # Handle potential markdown code blocks in response
-            if "```json" in result_text:
-                result_text = result_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in result_text:
-                result_text = result_text.split("```")[1].split("```")[0].strip()
-            
-            refined_json = json.loads(result_text)
-            
-            # Ensure it is a dictionary, not a list
-            if isinstance(refined_json, list):
-                if len(refined_json) > 0 and isinstance(refined_json[0], dict):
-                    refined_json = refined_json[0]
-                else:
-                    raise ValueError("Gemini returned a list without a valid dictionary.")
-            
-            # CRITICAL: Merge local skills to ensure Gemini doesn't delete them
-            if "skills" in parsed_data:
-                gemini_skills = refined_json.get("skills", [])
-                if isinstance(gemini_skills, list):
-                    # Combine and deduplicate
-                    combined = list(set(parsed_data["skills"] + gemini_skills))
-                    # Re-run normalizer to ensure any new skills Gemini found are canonicalized
-                    refined_json["skills"] = normalizer.process_list(combined)
-                else:
-                    refined_json["skills"] = parsed_data["skills"]
-                    
-            logger.info("Gemini refinement successful.")
-            return refined_json
-        except Exception as e:
-            logger.error(f"Gemini refinement failed: {e}")
-            return parsed_data
-
-# Initialize Refiner
-refiner = GeminiRefiner()
 
 US_WORK_AUTH_PATTERNS = {
     "US Citizen": [
@@ -286,37 +211,71 @@ class ResumeParser:
         # 2. NLP Processing
         doc = nlp(text)
         
-        # 3. Contact Info
-        emails = list(set(re.findall(r"[a-z0-9\._\-+]+@[a-z0-9\._\-]+\.[a-z]+", text.lower())))
-        phones = list(set(re.findall(r"(?:(?:\+?\d{1,3}[-.\s]?)?\(?\d{3,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{4,6})", text)))
+        # 3. Contact Info (100% Offline NLP)
+        emails = list(dict.fromkeys(re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)))
         
-        # 4. Name Extraction
+        # Phone numbers: support international codes (+91, +1), spaces, dashes, brackets
+        raw_phone_candidates = re.findall(
+            r"(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,5}[\s.-]?\d{3,5}(?:[\s.-]?\d{1,5})?",
+            text
+        )
+        phones = []
+        for cand in raw_phone_candidates:
+            cand_clean = cand.strip(" \t\r\n-.,;:()")
+            digits_only = re.sub(r"\D", "", cand_clean)
+            if 10 <= len(digits_only) <= 15:
+                # Discard years/date ranges like 2014-2018 or 20202024
+                if re.match(r"^(19|20)\d{2}(19|20)\d{2}$", digits_only):
+                    continue
+                if cand_clean not in phones:
+                    phones.append(cand_clean)
+        
+        # 4. Name Extraction (100% Offline NLP)
         name = None
         lines = [l.strip() for l in text.split('\n') if l.strip()]
-        skip_keywords = ["resume", "cv", "profile", "summary", "curriculum", "curriculam", "vitale", "vitae", "contact", "email", "phone"]
+        skip_keywords = [
+            "resume", "cv", "curriculum", "curriculam", "vitale", "vitae", "profile", "summary",
+            "contact", "email", "phone", "address", "objective", "career", "experience",
+            "education", "skills", "projects", "certifications", "portfolio", "links",
+            "page", "personal", "details", "information", "declaration"
+        ]
         
-        for line in lines[:10]:
-            lower_line = line.lower()
-            if "@" in line or len(re.findall(r'\d', line)) > 4 or len(line.split()) > 4:
+        for line in lines[:15]:
+            # Remove any leading icons/symbols (e.g. , , bullet points)
+            cleaned_line = re.sub(r"^[^\w\s]+", "", line).strip()
+            lower_line = cleaned_line.lower()
+            if not cleaned_line:
+                continue
+            if "@" in cleaned_line or any(kw in lower_line for kw in ["http", "www", "github", "linkedin"]):
+                continue
+            if len(re.findall(r'\d', cleaned_line)) > 2 or len(cleaned_line.split()) > 4 or len(cleaned_line.split()) < 2:
                 continue
             if any(kw in lower_line for kw in skip_keywords):
                 continue
-            if any(re.match(r"(?i)^" + kw, lower_line) for kw in ["experience", "education", "skills", "about"]):
+            if any(re.match(r"(?i)^" + kw, lower_line) for kw in ["experience", "education", "skills", "about", "work", "technical"]):
                 continue
             
-            if 2 <= len(line.split()) <= 4 and re.match(r"^[A-Za-z\s\.]+$", line):
-                name = line
-                break
+            words = cleaned_line.split()
+            if all(w[0].isupper() or w in ["de", "da", "von", "van", "al", "bin"] for w in words if w):
+                if re.match(r"^[A-Za-z\s\.\-']+$", cleaned_line):
+                    name = cleaned_line
+                    break
 
         if not name:
             for ent in doc.ents:
                 if ent.label_ == "PERSON":
-                    clean_name = ent.text.strip()
-                    if 2 <= len(clean_name.split()) <= 4 and not any(c.isdigit() for c in clean_name):
-                        if any(kw in clean_name.lower() for kw in ["limited", "company", "pvt", "ltd", "india", "university", "college"]):
+                    clean_name = ent.text.strip().strip(" \t\r\n-.,;:")
+                    words = clean_name.split()
+                    if 2 <= len(words) <= 4 and not any(c.isdigit() for c in clean_name):
+                        clean_lower = clean_name.lower()
+                        if any(kw in clean_lower for kw in [
+                            "limited", "company", "pvt", "ltd", "inc", "corp", "india", "university",
+                            "college", "school", "institute", "hospital", "resume", "curriculum", "page"
+                        ]):
                             continue
                         name = clean_name
                         break
+
 
         # 5. Extract Skills (Section + Entities + Dictionary Scan)
         extracted_skills = []
@@ -488,11 +447,9 @@ class ResumeParser:
             years = 2 if len(experience_detailed) > 0 else 0
             initial_result["skills_detailed"] = [{"name": s, "years_of_experience": years} for s in normalized_skills]
 
-        # Optional LLM Refinement (Skipped if key is missing)
-        refined_result = refiner.refine(initial_result, text)
-        
-        # Hybrid strategy fallback resolution
-        refined_result["work_authorization"] = refined_result.get("work_authorization") or initial_result.get("work_authorization")
+        # 100% Offline NLP Mode: No LLM/AI refinement
+        refined_result = initial_result
+
         
         # ATS Normalization Post-Processing
         ats_data = {
@@ -638,61 +595,8 @@ class JobDescriptionParser:
             "roles": []
         }
         
-        # 2. Gemini Refinement (if API Key is active)
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if api_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-2.5-flash')
-                
-                prompt = f"""
-                You are a high-precision ATS parsing engine (emulating Ceipal standard). Analyze the following Job Description (JD) and extract details:
-                
-                RULES:
-                - "primarySkills": Skills listed under "Required", "Must Have", or key responsibilities sections.
-                - "secondarySkills": Skills listed under "Preferred", "Desired", or "Nice to Have" sections.
-                - "jobTitle": Identify the target job title (e.g. Senior DevOps Engineer).
-                - "workAuthorization": If the JD mentions visa terms or requirements (like US Citizen, GC, H1B), specify it. Otherwise return null.
-                - "roles": Identify matching titles/roles.
-                
-                Job Description:
-                {text[:6000]}
-                
-                Return ONLY a JSON object with the keys "primarySkills", "secondarySkills", "jobTitle", "workAuthorization", and "roles". Do NOT include any markdown code formatting or extra text.
-                """
-                
-                response = model.generate_content(prompt)
-                res_text = response.text.strip()
-                if "```json" in res_text:
-                    res_text = res_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in res_text:
-                    res_text = res_text.split("```")[1].split("```")[0].strip()
-                    
-                ai_data = json.loads(res_text)
-                
-                # Merge and normalize
-                if isinstance(ai_data, dict):
-                    if ai_data.get("jobTitle"):
-                        result["jobTitle"] = ai_data["jobTitle"]
-                    if ai_data.get("workAuthorization"):
-                        result["workAuthorization"] = ai_data["workAuthorization"]
-                    
-                    if isinstance(ai_data.get("primarySkills"), list):
-                        primary_set = set(normalizer.process_list(ai_data["primarySkills"]))
-                        primary_set.update(local_primary)
-                        result["primarySkills"] = sorted(list(primary_set))[:8]
-                        
-                    if isinstance(ai_data.get("secondarySkills"), list):
-                        secondary_set = set(normalizer.process_list(ai_data["secondarySkills"]))
-                        secondary_set.update(local_secondary)
-                        secondary_set = secondary_set - set(result["primarySkills"])
-                        result["secondarySkills"] = sorted(list(secondary_set))[:8]
-                        
-                    if isinstance(ai_data.get("roles"), list):
-                        result["roles"] = ai_data["roles"]
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"Gemini JD refinement failed: {e}")
-                
+        # 2. 100% Offline NLP Mode: Balance primary & secondary skills locally
+        result["primarySkills"] = local_primary[:8]
+        result["secondarySkills"] = [s for s in local_secondary if s not in result["primarySkills"]][:8]
         return result
+
