@@ -147,56 +147,276 @@ def create_nlp_pipeline():
 # Global NLP Instance
 nlp = create_nlp_pipeline()
 
+def normalize_text_dashes(t: str) -> str:
+    """Normalizes unicode dashes, private use icons, and adds space between month names and 4-digit years."""
+    if not t:
+        return ""
+    t = re.sub(r'[\u2010\u2011\u2012\u2013\u2014\u2212]', '-', t)
+    t = re.sub(r'[\uf000-\uf8ff]', '', t)
+    # Only separate months and years like June2023 -> June 2023, never email addresses like barik2808
+    t = re.sub(r'(?i)\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(\d{4})\b', r'\1 \2', t)
+    return t
+
+def split_date_range(raw_str: str):
+    raw_str = raw_str.strip()
+    parts = re.split(r'\s*[-–—/]\s*|\s+to\s+', raw_str, flags=re.I)
+    start = parts[0].strip() if len(parts) > 0 else raw_str
+    end = parts[1].strip() if len(parts) > 1 else ""
+    if len(start) == 4 and len(end) == 2 and end.isdigit():
+        end = start[:2] + end
+    return start, end
+
+HEADER_PATTERNS = {
+    "experience": r"(?i)^\s*(experience|employment|work history|professional experience|background|roles & responsibilities|professional background|work\s+experience)\s*[:]?\s*$",
+    "education": r"(?i)^\s*(education|academic|scholastic|qualifications|academic\s+history)\s*[:]?\s*$",
+    "skills": r"(?i)^\s*(skills|technologies|proficiencies|expertise|technical skills|tools|key\s+skills|core\s+competencies|competencies|programming|miscellaneous)\s*[:]?\s*$",
+    "certifications": r"(?i)^\s*(certifications?|certificates?|training|courses|courses\s+and\s+certifications|awards)\s*[:]?\s*$",
+    "projects": r"(?i)^\s*(projects|assignments|key projects|academic projects|recent projects|portfolio)\s*[:]?\s*$",
+    "internships": r"(?i)^\s*(internships?|summer\s+internship|vocational\s+training)\s*[:]?\s*$",
+    "interests": r"(?i)^\s*(interests?|hobbies|activities|extracurricular)\s*[:]?\s*$",
+    "languages": r"(?i)^\s*(languages?|known\s+languages|languages\s+known)\s*[:]?\s*$",
+    "declaration": r"(?i)^\s*(declaration|declaration\s*:?)\s*[:]?\s*$",
+    "links": r"(?i)^\s*(links?|social\s+links|profiles?)\s*[:]?\s*$",
+    "summary": r"(?i)^\s*(objective|career\s+objective|summary|professional\s+summary|profile|about\s+me)\s*[:]?\s*$"
+}
+
+DATE_RANGE_REGEX = re.compile(
+    r'(?:(?:\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b\.?\s*)?\d{2,4}\s*(?:[-–—/]+|\bto\b)\s*(?:(?:\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b\.?\s*)?\d{2,4}|Present|Current|Till Date|Ongoing)\b)',
+    re.I
+)
+YEAR_RANGE_REGEX = re.compile(r'\b(19|20)\d{2}\s*(?:[-–—/]+|\bto\b)\s*(?:(19|20)?\d{2}|Present|Current)\b', re.I)
+SINGLE_YEAR_REGEX = re.compile(r'\b(19|20)\d{2}\b')
+
+DEGREE_REGEX = re.compile(
+    r'\b(b\.?tech|m\.?tech|b-tech|m-tech|b\.?e\.?|m\.?e\.?|b\.?sc|m\.?sc|b\.?com|m\.?com|bca|mca|mba|ph\.?d|bachelor(?:\s+of\s+[\w\s&]+)?|master(?:\s+of\s+[\w\s&]+)?|diploma|xii|x|higher\s+secondary|secondary\s+school|high\s+school)\b',
+    re.I
+)
+
+ROLE_REGEX = re.compile(
+    r'\b(manager|engineer|consultant|analyst|developer|lead|assistant|executive|specialist|officer|coordinator|head|director|intern|trainee|recruiter|generalist|associate|supervisor|administrator|architect|scientist)\b',
+    re.I
+)
+
+def parse_education_detailed(edu_text: str):
+    if not edu_text:
+        return []
+    edu_text = normalize_text_dashes(edu_text)
+    raw_lines = [re.sub(r'^[^\w\s()/,.-]+', '', l).strip() for l in edu_text.split('\n') if l.strip()]
+    if not raw_lines:
+        return []
+
+    entries = []
+    curr_entry = []
+    
+    for line in raw_lines:
+        is_date_line = bool(YEAR_RANGE_REGEX.search(line) or (SINGLE_YEAR_REGEX.search(line) and len(line.split()) <= 2))
+        is_degree_line = bool(DEGREE_REGEX.search(line) and len(line.split()) < 8)
+        
+        curr_has_date = any(YEAR_RANGE_REGEX.search(l) or (SINGLE_YEAR_REGEX.search(l) and len(l.split()) <= 2) for l in curr_entry)
+        curr_has_deg = any(DEGREE_REGEX.search(l) and len(l.split()) < 8 for l in curr_entry)
+        
+        if (is_date_line and curr_has_date) or (is_degree_line and curr_has_deg and curr_has_date):
+            if curr_entry:
+                entries.append(curr_entry)
+                curr_entry = []
+        curr_entry.append(line)
+        
+    if curr_entry:
+        entries.append(curr_entry)
+
+    results = []
+    for lines in entries:
+        school = ""
+        degree = ""
+        major = ""
+        start_date = ""
+        end_date = ""
+        
+        for line in lines:
+            d_match = YEAR_RANGE_REGEX.search(line) or DATE_RANGE_REGEX.search(line)
+            if d_match and not start_date:
+                start_date, end_date = split_date_range(d_match.group(0))
+                continue
+            elif not start_date:
+                sy = SINGLE_YEAR_REGEX.search(line)
+                if sy and len(line.split()) <= 2:
+                    end_date = sy.group(0)
+                    continue
+
+            deg_match = DEGREE_REGEX.search(line)
+            if deg_match and not degree:
+                degree = deg_match.group(0).strip()
+                paren_match = re.search(r'\((.*?)\)', line)
+                if paren_match:
+                    major = paren_match.group(1).strip()
+                elif " in " in line.lower():
+                    major = re.split(r'\s+in\s+', line, flags=re.I)[1].strip()
+                continue
+
+            if any(k in line.lower() for k in ["university", "college", "school", "institute", "vidyalaya", "academy", "cipet", "bput", "cbse"]) and not school:
+                school = line
+                continue
+            elif not school and not deg_match and not d_match:
+                if len(line.split()) >= 2 and not line.startswith(('•', '-', '*')):
+                    school = line
+
+        if degree or school:
+            results.append({
+                "school": school,
+                "degree": degree or "Degree",
+                "major": major,
+                "start_date": start_date,
+                "end_date": end_date
+            })
+    return results
+
+def parse_experience_detailed(exp_text: str):
+    if not exp_text:
+        return []
+    exp_text = normalize_text_dashes(exp_text)
+    raw_lines = [l.strip() for l in exp_text.split('\n') if l.strip()]
+    if not raw_lines:
+        return []
+
+    entries = []
+    curr_lines = []
+    
+    for line in raw_lines:
+        cleaned_line = re.sub(r'^[^\w\s]+', '', line).strip()
+        date_match = DATE_RANGE_REGEX.search(cleaned_line) or YEAR_RANGE_REGEX.search(cleaned_line)
+        
+        if date_match and len(line.split()) < 10:
+            has_date = any(DATE_RANGE_REGEX.search(l) or YEAR_RANGE_REGEX.search(l) for l in curr_lines)
+            if has_date:
+                entries.append(curr_lines)
+                curr_lines = []
+        curr_lines.append(line)
+        
+    if curr_lines:
+        entries.append(curr_lines)
+
+    results = []
+    for lines in entries:
+        role = ""
+        company = ""
+        start_date = ""
+        end_date = ""
+        bullets = []
+        
+        for idx, line in enumerate(lines):
+            clean_l = re.sub(r'^[^\w\s()/,.-]+', '', line).strip()
+            
+            d_match = DATE_RANGE_REGEX.search(clean_l) or YEAR_RANGE_REGEX.search(clean_l)
+            if d_match and not start_date and len(clean_l.split()) < 10:
+                start_date, end_date = split_date_range(d_match.group(0))
+                continue
+                
+            r_match = ROLE_REGEX.search(clean_l)
+            if r_match and not role and len(clean_l.split()) < 10 and not line.startswith(('•', '-', '*')):
+                role = clean_l
+                continue
+                
+            is_comp = any(k in clean_l.lower() for k in ["pvt", "ltd", "services", "consultancy", "solutions", "technologies", "corp", "inc", "llc", "electronics", "addverb", "ciel", "jbsg", "tata"]) or (',' in clean_l and len(clean_l.split()) < 8) or clean_l.lower() in ["online", "remote"]
+            if is_comp and not company and not line.startswith(('•', '-', '*')) and len(clean_l.split()) < 10:
+                company = clean_l
+                continue
+                
+            if line.startswith(('•', '-', '*', '●')) or len(line.split()) > 7:
+                bullets.append(line.lstrip('•-*● '))
+            elif not company and not role and len(clean_l.split()) >= 2 and len(clean_l.split()) < 10:
+                company = clean_l
+
+        if role or company or start_date:
+            results.append({
+                "role": role or "Role",
+                "company": company or "Company",
+                "start_date": start_date,
+                "end_date": end_date or "Present",
+                "description": "\n".join(bullets),
+                "is_current": "present" in (end_date or "").lower() or "current" in (end_date or "").lower()
+            })
+    return results
+
+def parse_skills_purified(skills_text: str, full_text: str):
+    skills_text = normalize_text_dashes(skills_text)
+    full_text = normalize_text_dashes(full_text)
+    
+    extracted = []
+    
+    junk_words = {
+        "declaration", "interests", "languages", "english", "hindi", "odia", "reading", "painting",
+        "cooking", "programming", "miscellaneous", "hobbies", "activities", "only", "player",
+        "thoroughly", "concept", "made", "learned", "this", "using", "power", "features",
+        "showcases", "working", "design", "visually", "format", "the", "true", "belief", "signature",
+        "date", "place", "name"
+    }
+    
+    domain_terms = [
+        "ATS", "Recruitment", "Talent Acquisition", "Sourcing", "Onboarding", "Screening",
+        "Compliance", "Employee Relations", "Employer Branding", "HR Analytics", "SAP",
+        "Workforce Planning", "Stakeholder Engagement", "Campus Hiring", "HRIS", "HRMS", "Payroll"
+    ]
+    for dt in domain_terms:
+        if re.search(rf"\b{re.escape(dt)}\b", full_text, flags=re.I):
+            extracted.append(dt)
+
+    for line in skills_text.split('\n'):
+        parts = re.split(r'[,|•●▪\t;]', line)
+        for p in parts:
+            item = p.strip().strip('()[]•●- \t\r\n')
+            if not item:
+                continue
+            if len(item.split()) > 7 or len(item) > 55:
+                continue
+            if item.lower() in junk_words:
+                continue
+            if any(v in item.lower() for v in ["learned", "made this", "implemented", "utilizes", "taking"]):
+                continue
+            if len(item) >= 2:
+                extracted.append(item)
+
+    # Full text scan from normalizer alias map
+    full_text_lower = full_text.lower()
+    for alias in normalizer._alias_map.keys():
+        if len(alias) >= 3 or alias in ["c", "r", "go", "ui", "ux", "ai", "ml", "db"]:
+            if re.search(rf"\b{re.escape(alias)}\b", full_text_lower):
+                if alias.lower() not in junk_words:
+                    extracted.append(alias.title())
+
+    clean_unique = []
+    for s in extracted:
+        norm = s.strip()
+        if norm.lower() not in junk_words and norm not in clean_unique:
+            clean_unique.append(norm)
+            
+    return normalizer.process_list(clean_unique)
+
 class ResumeParser:
     @staticmethod
     def segment_sections(text: str):
         """Splits the document into logical sections using robust regex matching."""
-        sections = {
-            "experience": "",
-            "education": "",
-            "skills": "",
-            "projects": "",
-            "certifications": "",
-            "other": ""
-        }
-        
-        # Comprehensive header patterns (Refined to be standalone lines or end with colon)
-        header_patterns = {
-            "experience": r"(?i)^\s*(experience|employment|work history|professional experience|background|roles & responsibilities|professional background|experience\d+|work\s+experience)\s*[:]?\s*$",
-            "education": r"(?i)^\s*(education|academic|scholastic|qualifications|academic\s+history)\s*[:]?\s*$",
-            "skills": r"(?i)^\s*(skills|technologies|proficiencies|expertise|technical skills|tools|key\s+skills|core\s+competencies|competencies|programming|miscellaneous)\s*[:]?\s*$",
-            "certifications": r"(?i)^\s*(certifications|certificates|training|courses|awards|certification)\s*[:]?\s*$",
-            "projects": r"(?i)^\s*(projects|assignments|key projects|academic projects|recent projects|portfolio)\s*[:]?\s*$"
-        }
-        
+        text = normalize_text_dashes(text)
+        sections = {k: "" for k in HEADER_PATTERNS}
+        sections["other"] = ""
         current_section = "other"
-        lines = text.split('\n')
         
+        lines = text.split('\n')
         for line in lines:
-            clean_line = line.strip()
+            clean_line = re.sub(r'^[^\w\s]+', '', line).strip()
             if not clean_line:
                 continue
             
-            # Check if line is a header (usually short, standalone or ends with colon)
             is_header = False
             if len(clean_line.split()) < 6:
-                # Check for regex match
-                # Also consider all-caps lines as headers if they contain section keywords
                 is_all_caps = clean_line.isupper() and len(clean_line) > 3
-                for sec_name, pattern in header_patterns.items():
+                for sec_name, pattern in HEADER_PATTERNS.items():
                     if re.match(pattern, clean_line) or (is_all_caps and re.match(pattern, clean_line)):
                         current_section = sec_name
                         is_header = True
                         break
             
-            # Specialized check for common "Role:" headers in experience
-            if not is_header and "experience" in current_section:
-                if re.match(r"(?i)^(roles?|responsibilities|job|position|duties):", clean_line):
-                    # Keep it in experience
-                    pass
-
             if not is_header:
-                sections[current_section] += clean_line + "\n"
+                sections[current_section] += line + "\n"
         
         return sections
 
@@ -204,6 +424,8 @@ class ResumeParser:
     def parse(text: str):
         if not nlp:
             return {"error": "NLP model not loaded"}
+
+        text = normalize_text_dashes(text)
 
         # 1. Section Segmentation
         sections = ResumeParser.segment_sections(text)
@@ -214,7 +436,6 @@ class ResumeParser:
         # 3. Contact Info (100% Offline NLP)
         emails = list(dict.fromkeys(re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)))
         
-        # Phone numbers: support international codes (+91, +1), spaces, dashes, brackets
         raw_phone_candidates = re.findall(
             r"(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,5}[\s.-]?\d{3,5}(?:[\s.-]?\d{1,5})?",
             text
@@ -224,7 +445,6 @@ class ResumeParser:
             cand_clean = cand.strip(" \t\r\n-.,;:()")
             digits_only = re.sub(r"\D", "", cand_clean)
             if 10 <= len(digits_only) <= 15:
-                # Discard years/date ranges like 2014-2018 or 20202024
                 if re.match(r"^(19|20)\d{2}(19|20)\d{2}$", digits_only):
                     continue
                 if cand_clean not in phones:
@@ -241,7 +461,6 @@ class ResumeParser:
         ]
         
         for line in lines[:15]:
-            # Remove any leading icons/symbols (e.g. , , bullet points)
             cleaned_line = re.sub(r"^[^\w\s]+", "", line).strip()
             lower_line = cleaned_line.lower()
             if not cleaned_line:
@@ -276,127 +495,27 @@ class ResumeParser:
                         name = clean_name
                         break
 
+        # 5. Extract Detailed Education & Experience
+        education_detailed = parse_education_detailed(sections["education"])
+        experience_detailed = parse_experience_detailed(sections["experience"])
+        skills = parse_skills_purified(sections["skills"], text)
 
-        # 5. Extract Skills (Section + Entities + Dictionary Scan)
-        extracted_skills = []
-        # a. From Skills Section
-        skill_lines = sections["skills"].split('\n')
-        for line in skill_lines:
-            parts = re.split(r'[,|•\t;]', line)
-            for p in parts:
-                if len(p.strip()) > 1:
-                    extracted_skills.append(p.strip())
-
-        # b. From Entities
-        for ent in doc.ents:
-            if ent.label_ == "SKILL":
-                extracted_skills.append(ent.text)
-            
-        # c. Full-Text Dictionary Scan (Critical for "SEACOM" test without AI)
-        # This scans the whole text for anything in our alias map
-        from app.normalizer import normalizer
-        full_text_lower = text.lower()
-        for alias in normalizer._alias_map.keys():
-            # Look for whole word matches to avoid partial matching (e.g. "py" in "happy")
-            if re.search(rf"\b{re.escape(alias)}\b", full_text_lower):
-                extracted_skills.append(alias)
-
-        extracted_degrees = []
-        extracted_institutes = []
-        extracted_roles = []
         extracted_locations = []
         extracted_companies = []
-        
         for ent in doc.ents:
-            if ent.label_ == "DEGREE":
-                extracted_degrees.append(ent.text.strip())
-            elif ent.label_ in ["GPE", "LOC"]:
+            if ent.label_ in ["GPE", "LOC"]:
                 extracted_locations.append(ent.text.strip())
             elif ent.label_ == "ORG":
                 extracted_companies.append(ent.text.strip())
 
-        # 6. Refine Skills
-        if sections["skills"]:
-            skill_lines = re.split(r'[\n•\-\*]', sections["skills"])
-            for sl in skill_lines:
-                clean_line = sl.strip()
-                if not clean_line or len(clean_line) > 150: continue
-                
-                # Split by comma ONLY if it doesn't look like a complex sentence (has parentheses or fewer than 2 commas)
-                if ',' in clean_line and '(' not in clean_line and clean_line.count(',') < 5:
-                    parts = clean_line.split(',')
-                else:
-                    parts = [clean_line]
-                
-                for p in parts:
-                    s = p.strip().strip('()[]•●- \t\r\n')
-                    if 2 <= len(s) <= 45 and len(s.split()) < 7:
-                        # Stricter filtering for fragments
-                        if not any(kw in s.lower() for kw in ["via", "focused", "reports", "signature", "date:", "wide", "enabled", "coordinated"]):
-                            extracted_skills.append(s)
-
-        # 7. Refine Education
-        if sections["education"]:
-            edu_doc = nlp(sections["education"])
-            for ent in edu_doc.ents:
-                if ent.label_ == "ORG":
-                    # Validate that it looks like an educational institute
-                    text_lower = ent.text.lower()
-                    if any(kw in text_lower for kw in ["university", "college", "school", "institute", "vidya", "mandir", "academy", "learning", "education"]):
-                        extracted_institutes.append(ent.text.strip())
-            
-            for line in sections["education"].split('\n'):
-                l_lower = line.lower()
-                # Ensure it's a degree line and not just a skill mention
-                if any(kw in l_lower for kw in ["graduation", "bachelor", "master", "degree", "post grad", "mca", "mba", "b.tech", "m.tech", "diploma"]):
-                    # Basic filter to avoid skills leaking in if they happen to have those keywords
-                    if len(line.split()) < 10:
-                        extracted_degrees.append(line.strip())
-
-        # 8. Refine Experience & Extract Temporal Dates
-        experience_detailed = []
-        for sec_name in ["experience"]:
-            sec_text = sections[sec_name]
-            if not sec_text: continue
-            
-            exp_lines = [l.strip() for l in sec_text.split('\n') if len(l.strip()) > 5]
-            current_role = None
-            current_company = None
-            
-            for line in exp_lines:
-                # 8a. Detect Roles
-                role_match = re.search(r"\b(manager|engineer|consultant|analyst|developer|lead|assistant|executive|specialist|officer|coordinator|head|director|intern|trainee|recruiter|generalist)\b", line, re.I)
-                if role_match and len(line.split()) < 10 and not line.startswith(('●', '•', '-', '*')):
-                    extracted_roles.append(line)
-                    current_role = line
-                
-                # 8b. Detect Dates
-                date_match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*\d{2,4}\s*[-–to]+\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Present|Current)[a-z]*\s*\d{0,4}', line, re.I)
-                if not date_match:
-                    # Try YYYY - YYYY
-                    date_match = re.search(r'\b(19|20)\d{2}\s*[-–to]+\s*(19|20)\d{2}|Present\b', line, re.I)
-
-                if current_role and date_match:
-                    date_str = date_match.group(0)
-                    start_date = date_str.split('-')[0].strip() if '-' in date_str else date_str
-                    end_date = date_str.split('-')[1].strip() if '-' in date_str else "Present"
-                    experience_detailed.append({
-                        "role": current_role,
-                        "company": "Unknown", # Needs DB normalizer to accurately guess
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "is_current": "present" in end_date.lower() or "current" in end_date.lower()
-                    })
-                    current_role = None # reset to avoid duplicate attachment
-
-        # 9. Smart Company Filtering (using Normalizer)
+        # Smart Company Filtering (using Normalizer)
         valid_companies = []
         for comp in extracted_companies:
             comp_id, comp_canon = normalizer.normalize_company(comp)
-            if comp_id: # Only trust it if it actually exists in our master dictionary!
+            if comp_id:
                 valid_companies.append({"id": comp_id, "raw": comp, "canonical": comp_canon})
 
-        # 10. Smart Project Grouping
+        # Smart Project Grouping
         projects_detailed = []
         current_proj = None
         for line in sections["projects"].split('\n'):
@@ -411,7 +530,13 @@ class ResumeParser:
                 current_proj = {"title": "Project", "description": [line]}
         if current_proj: projects_detailed.append(current_proj)
 
-        # Final Structured Result
+        # Build detected roles from experience detailed
+        detected_roles = [e["role"] for e in experience_detailed if e.get("role") and e["role"] != "Role"]
+        institutes_and_degrees = []
+        for e in education_detailed:
+            if e.get("degree"): institutes_and_degrees.append(e["degree"])
+            if e.get("school"): institutes_and_degrees.append(e["school"])
+
         initial_result = {
             "candidate_name": name or "Unknown",
             "contact": {
@@ -419,38 +544,24 @@ class ResumeParser:
                 "phones": phones
             },
             "experience": {
-                "detected_roles": sorted(list(set([r.strip() for r in extracted_roles if len(r.strip()) > 3])))[:10]
+                "detected_roles": sorted(list(set(detected_roles)))[:10]
             },
             "experience_detailed": experience_detailed,
             "education": {
-                "institutes_and_degrees": sorted(list(set([e.strip() for e in (extracted_degrees + extracted_institutes) if len(e.strip()) > 3])))[:10]
+                "institutes_and_degrees": sorted(list(set(institutes_and_degrees)))[:10]
             },
-            "skills": sorted(list(set([s.strip().title() for s in extracted_skills if len(s.strip()) > 1]))),
+            "education_detailed": education_detailed,
+            "skills": skills,
+            "skills_detailed": [{"name": s, "years_of_experience": (2 if len(experience_detailed) > 0 else 0)} for s in skills],
             "certifications": sorted(list(set([c.strip() for c in sections["certifications"].split('\n') if len(c.strip()) > 5]))),
             "projects": [f"{p['title']}: {' '.join(p['description'])}" for p in projects_detailed] if projects_detailed else [p.strip() for p in sections["projects"].split('\n') if len(p.strip()) > 10],
             "work_authorization": extract_work_authorization(text),
+            "raw_text": text,
             "word_count": len(text.split())
         }
 
-        # Local Junk Filter (Post-AI Cleanup)
-        junk_skills = {"Only", "Player", "Thoroughly", "Concept", "Made", "Learned", "This", "Using", "Power", "Features", "Showcases", "Working", "Design", "Visually", "Format", "Searchforfoodrecipes", "The", "Thoroughly", "Learned Frontend Web Development Thoroughly"}
-        if "skills" in initial_result:
-            clean_list = []
-            for s in initial_result["skills"]:
-                if s in junk_skills: continue
-                if len(s) > 40 or len(s.split()) > 4: continue
-                clean_list.append(s)
-            
-            normalized_skills = normalizer.process_list(clean_list)
-            initial_result["skills"] = normalized_skills
-            # Map years of experience to skills using a simple heuristic since AI isn't here
-            years = 2 if len(experience_detailed) > 0 else 0
-            initial_result["skills_detailed"] = [{"name": s, "years_of_experience": years} for s in normalized_skills]
-
-        # 100% Offline NLP Mode: No LLM/AI refinement
         refined_result = initial_result
 
-        
         # ATS Normalization Post-Processing
         ats_data = {
             "location": {"id": None, "raw": None},
@@ -468,20 +579,12 @@ class ResumeParser:
         if not ats_data["location"]["id"] and extracted_locations:
             ats_data["location"]["raw"] = extracted_locations[0]
             
-        roles_to_check = list(set(extracted_roles))
-        if "experience" in refined_result and isinstance(refined_result["experience"], list):
-            roles_to_check.extend([str(r) for r in refined_result["experience"] if isinstance(r, str)])
-        roles_to_check = list(set(roles_to_check))
-        
+        roles_to_check = list(set(detected_roles))
         for role in roles_to_check:
             desig_id, desig_canon = normalizer.normalize_designation(role)
             ats_data["designations"].append({"id": desig_id, "raw": role, "canonical": desig_canon})
                 
-        degs_to_check = list(set(extracted_degrees))
-        if "education" in refined_result and isinstance(refined_result["education"], list):
-             degs_to_check.extend([str(d) for d in refined_result["education"] if isinstance(d, str)])
-        degs_to_check = list(set(degs_to_check))
-        
+        degs_to_check = [e["degree"] for e in education_detailed if e.get("degree")]
         for deg in degs_to_check:
             deg_id, deg_canon = normalizer.normalize_degree(deg)
             ats_data["degrees"].append({"id": deg_id, "raw": deg, "canonical": deg_canon})
