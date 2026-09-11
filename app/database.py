@@ -14,7 +14,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is not set.")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"options": "-csearch_path=ats,mass_mail,public"} if "sqlite" not in DATABASE_URL else {}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 from sqlalchemy.dialects.postgresql import JSONB
@@ -193,101 +198,13 @@ def save_resume(filename, parsed_data, embedding, file_hash, raw_text=None, sour
             raw_text=raw_text
         )
         db.add(record)
-        db.flush()
-        
-        # --- ATS Normalized Storage ---
-        ats_data = parsed_data.get("ats_normalized", {})
-        phones = contact.get("phones", []) if isinstance(contact, dict) else []
-        phone = phones[0] if phones else None
-        
-        candidate = Candidate(
-            full_name=parsed_data.get("candidate_name"),
-            email=primary_email,
-            phone=phone,
-            current_location_id=ats_data.get("location", {}).get("id"),
-            raw_current_location=ats_data.get("location", {}).get("raw"),
-            work_authorization=parsed_data.get("work_authorization"),
-            resume_record_id=record.id,
-            source=source
-        )
-        
-        designations = ats_data.get("designations", [])
-        if designations:
-            candidate.current_designation_id = designations[0].get("id")
-            candidate.raw_current_designation = designations[0].get("raw")
-            
-        db.add(candidate)
-        db.flush()
-        
-        # Save Skills mapping
-        skills_found = parsed_data.get("skills", [])
-        if skills_found:
-            skill_masters = db.query(SkillMaster).filter(SkillMaster.canonical_name.in_(skills_found)).all()
-            
-            # Map years of experience if available
-            skills_detailed = parsed_data.get("skills_detailed", [])
-            skill_years_map = {s.get("name", "").lower(): s.get("years_of_experience") for s in skills_detailed if isinstance(s, dict)}
-            
-            for sm in skill_masters:
-                yoe = skill_years_map.get(sm.canonical_name.lower())
-                db.add(CandidateSkill(candidate_id=candidate.id, skill_id=sm.id, years_of_experience=yoe))
-                
-        # Save Experience
-        # Using Gemini's detailed experience extraction if available
-        exp_detailed = parsed_data.get("experience_detailed", [])
-        if exp_detailed and isinstance(exp_detailed, list):
-            for exp in exp_detailed:
-                if not isinstance(exp, dict): continue
-                # Find matching company and designation from the normalized lists
-                c_name = exp.get("company", "")
-                r_name = exp.get("role", "")
-                
-                # Match to normalized lists
-                comp_id = next((c.get("id") for c in ats_data.get("companies", []) if c.get("raw") == c_name), None)
-                desig_id = next((d.get("id") for d in designations if d.get("raw") == r_name), None)
-                
-                import datetime
-                def parse_date(date_str):
-                    if not date_str: return None
-                    try: return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-                    except: return None
-                
-                db.add(CandidateExperience(
-                    candidate_id=candidate.id,
-                    company_id=comp_id,
-                    raw_company_name=c_name,
-                    designation_id=desig_id,
-                    raw_designation=r_name,
-                    start_date=parse_date(exp.get("start_date")),
-                    end_date=parse_date(exp.get("end_date")),
-                    currently_working=exp.get("is_current", False)
-                ))
-        else:
-            # Fallback to flattened logic if detailed not available
-            for desig in designations:
-                db.add(CandidateExperience(
-                    candidate_id=candidate.id,
-                    designation_id=desig.get("id"),
-                    raw_designation=desig.get("raw")
-                ))
-            for comp in ats_data.get("companies", []):
-                db.add(CandidateExperience(
-                    candidate_id=candidate.id,
-                    company_id=comp.get("id"),
-                    raw_company_name=comp.get("raw")
-                ))
-            
-        # Save Education
-        for deg in ats_data.get("degrees", []):
-            db.add(CandidateEducation(
-                candidate_id=candidate.id,
-                degree_id=deg.get("id"),
-                raw_degree=deg.get("raw")
-            ))
-
         db.commit()
         db.refresh(record)
         return record.id
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error saving resume record: {e}")
+        return None
     finally:
         db.close()
 
