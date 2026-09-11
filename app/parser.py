@@ -167,17 +167,18 @@ def split_date_range(raw_str: str):
     return start, end
 
 HEADER_PATTERNS = {
-    "experience": r"(?i)^\s*(experience|employment|work history|professional experience|background|roles & responsibilities|professional background|work\s+experience)\s*[:]?\s*$",
-    "education": r"(?i)^\s*(education|academic|scholastic|qualifications|academic\s+history)\s*[:]?\s*$",
-    "skills": r"(?i)^\s*(skills|technologies|proficiencies|expertise|technical skills|tools|key\s+skills|core\s+competencies|competencies|programming|miscellaneous)\s*[:]?\s*$",
-    "certifications": r"(?i)^\s*(certifications?|certificates?|training|courses|courses\s+and\s+certifications|awards)\s*[:]?\s*$",
-    "projects": r"(?i)^\s*(projects|assignments|key projects|academic projects|recent projects|portfolio)\s*[:]?\s*$",
+    "experience": r"(?i)^\s*(experience|employment|work\s+history|employment\s+history|professional\s+experience|professional\s+background|work\s+experience|relevant\s+experience|career\s+history|career\s+summary|roles\s*(?:&|and)\s*responsibilities|industry\s+experience)\s*[:]?\s*$",
+    "education": r"(?i)^\s*(education|academic|scholastic|qualifications?|academic\s+qualifications?|educational\s+qualifications?|academic\s+history|education\s+history|academic\s+background|educational\s+background|academics|education\s*(?:&|and)\s*qualifications?|education\s*(?:&|and)\s*training|degrees?\s*(?:&|and)\s*education)\s*[:]?\s*$",
+    "skills": r"(?i)^\s*(skills|technologies|proficiencies|expertise|technical\s+skills|key\s+skills|core\s+competencies|competencies|tools|programming|technical\s+expertise|areas\s+of\s+expertise|technology\s+stack|technical\s+proficiencies|skills\s*(?:&|and)\s*(?:tools|technologies))\s*[:]?\s*$",
+    "certifications": r"(?i)^\s*(certifications?|certificates?|training|courses|courses\s+and\s+certifications|licenses?\s*(?:&|and)\s*certifications?|awards)\s*[:]?\s*$",
+    "projects": r"(?i)^\s*(projects|key\s+projects|academic\s+projects|recent\s+projects|personal\s+projects|selected\s+projects|assignments|portfolio)\s*[:]?\s*$",
     "internships": r"(?i)^\s*(internships?|summer\s+internship|vocational\s+training)\s*[:]?\s*$",
-    "interests": r"(?i)^\s*(interests?|hobbies|activities|extracurricular)\s*[:]?\s*$",
+    "interests": r"(?i)^\s*(interests?|hobbies|activities|extracurricular(?:\s+activities)?)\s*[:]?\s*$",
     "languages": r"(?i)^\s*(languages?|known\s+languages|languages\s+known)\s*[:]?\s*$",
     "declaration": r"(?i)^\s*(declaration|declaration\s*:?)\s*[:]?\s*$",
     "links": r"(?i)^\s*(links?|social\s+links|profiles?)\s*[:]?\s*$",
-    "summary": r"(?i)^\s*(objective|career\s+objective|summary|professional\s+summary|profile|about\s+me)\s*[:]?\s*$"
+    "summary": r"(?i)^\s*(objective|career\s+objective|summary|professional\s+summary|executive\s+summary|profile|about\s+me)\s*[:]?\s*$",
+    "additional": r"(?i)^\s*(additional\s+information|personal\s+details|personal\s+information)\s*[:]?\s*$"
 }
 
 DATE_RANGE_REGEX = re.compile(
@@ -188,7 +189,7 @@ YEAR_RANGE_REGEX = re.compile(r'\b(19|20)\d{2}\s*(?:[-–—/]+|\bto\b)\s*(?:(19
 SINGLE_YEAR_REGEX = re.compile(r'\b(19|20)\d{2}\b')
 
 DEGREE_REGEX = re.compile(
-    r'\b(b\.?tech|m\.?tech|b-tech|m-tech|b\.?e\.?|m\.?e\.?|b\.?sc|m\.?sc|b\.?com|m\.?com|bca|mca|mba|ph\.?d|bachelor(?:\s+of\s+[\w\s&]+)?|master(?:\s+of\s+[\w\s&]+)?|diploma|xii|x|higher\s+secondary|secondary\s+school|high\s+school)\b',
+    r'\b(b\.?tech\.?|m\.?tech\.?|b-tech|m-tech|b\.?e\.?|m\.?e\.?|b\.?sc\.?|m\.?sc\.?|b\.?com\.?|m\.?com\.?|bca|mca|mba|ph\.?d\.?|bachelor(?:\s+of\s+[\w\s&]+)?|master(?:\s+of\s+[\w\s&]+)?|diploma|class\s+(?:xii|x|12|10)|12th|10th|xii|x|higher\s+secondary|secondary\s+school|high\s+school)\b',
     re.I
 )
 
@@ -196,6 +197,41 @@ ROLE_REGEX = re.compile(
     r'\b(manager|engineer|consultant|analyst|developer|lead|assistant|executive|specialist|officer|coordinator|head|director|intern|trainee|recruiter|generalist|associate|supervisor|administrator|architect|scientist)\b',
     re.I
 )
+
+TABLE_HEADERS = {
+    "qualification", "qualifications", "degree", "institution", "institute", 
+    "university", "college", "school", "board", "year", "passing year", 
+    "year of passing", "percentage", "cgpa", "sgpa", "marks", "grade", 
+    "duration", "stream", "specialization", "major"
+}
+
+def extract_header_location(text: str):
+    """Extracts location from candidate header / contact block."""
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    header_block = lines[:15]
+    known_countries = {"india", "usa", "united states", "uk", "canada", "australia", "singapore", "uae", "germany"}
+    
+    for line in header_block:
+        # Split on pipe, bullet, or tab (preserve commas within location)
+        segments = [s.strip() for s in re.split(r'[|•●▪\t;]', line) if s.strip()]
+        for seg in segments:
+            if "@" in seg or re.search(r'\d{7,}', seg) or any(k in seg.lower() for k in ["http", "www", "github", "linkedin", "gitlab"]):
+                continue
+            parts = [p.strip() for p in seg.split(',') if p.strip()]
+            if 1 <= len(parts) <= 3:
+                seg_lower = seg.lower()
+                if any(c in seg_lower for c in [
+                    "bengaluru", "bangalore", "pune", "mumbai", "delhi", "hyderabad", "chennai", 
+                    "kolkata", "noida", "gurgaon", "san francisco", "new york", "austin", "dallas", 
+                    "chicago", "seattle", "california", "texas", "karnataka", "maharashtra"
+                ]) or any(c in seg_lower for c in known_countries):
+                    return {
+                        "raw": seg,
+                        "city": parts[0],
+                        "state": parts[1] if len(parts) > 1 else "",
+                        "country": parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 and parts[1].lower() in known_countries else "")
+                    }
+    return {"raw": "", "city": "", "state": "", "country": ""}
 
 def parse_education_detailed(edu_text: str):
     if not edu_text:
@@ -205,65 +241,76 @@ def parse_education_detailed(edu_text: str):
     if not raw_lines:
         return []
 
+    # Filter out table header rows
+    filtered = []
+    for l in raw_lines:
+        cleaned = l.lower().strip()
+        parts = [p.strip() for p in re.split(r'[\t|/]+', cleaned) if p.strip()]
+        if parts and all(p in TABLE_HEADERS for p in parts):
+            continue
+        if cleaned in TABLE_HEADERS:
+            continue
+        filtered.append(l)
+
+    # Group into entries
     entries = []
     curr_entry = []
-    
-    for line in raw_lines:
-        is_date_line = bool(YEAR_RANGE_REGEX.search(line) or (SINGLE_YEAR_REGEX.search(line) and len(line.split()) <= 2))
-        is_degree_line = bool(DEGREE_REGEX.search(line) and len(line.split()) < 8)
+    for line in filtered:
+        is_degree = bool(DEGREE_REGEX.search(line))
+        is_year = bool(SINGLE_YEAR_REGEX.search(line) and len(line.split()) <= 2)
         
-        curr_has_date = any(YEAR_RANGE_REGEX.search(l) or (SINGLE_YEAR_REGEX.search(l) and len(l.split()) <= 2) for l in curr_entry)
-        curr_has_deg = any(DEGREE_REGEX.search(l) and len(l.split()) < 8 for l in curr_entry)
+        curr_has_deg = any(DEGREE_REGEX.search(l) for l in curr_entry)
+        curr_has_year = any(SINGLE_YEAR_REGEX.search(l) and len(l.split()) <= 2 for l in curr_entry)
         
-        if (is_date_line and curr_has_date) or (is_degree_line and curr_has_deg and curr_has_date):
-            if curr_entry:
-                entries.append(curr_entry)
-                curr_entry = []
+        if is_degree and curr_has_deg:
+            entries.append(curr_entry)
+            curr_entry = []
+        elif is_year and curr_has_year:
+            entries.append(curr_entry)
+            curr_entry = []
+            
         curr_entry.append(line)
-        
     if curr_entry:
         entries.append(curr_entry)
 
     results = []
-    for lines in entries:
-        school = ""
+    for grp in entries:
         degree = ""
         major = ""
+        school = ""
         start_date = ""
         end_date = ""
-        
-        for line in lines:
-            d_match = YEAR_RANGE_REGEX.search(line) or DATE_RANGE_REGEX.search(line)
+        for line in grp:
+            d_match = YEAR_RANGE_REGEX.search(line)
             if d_match and not start_date:
-                start_date, end_date = split_date_range(d_match.group(0))
+                parts = re.split(r'\s*[-–—/]\s*|\s+to\s+', d_match.group(0), flags=re.I)
+                start_date = parts[0].strip()
+                end_date = parts[1].strip() if len(parts) > 1 else ""
                 continue
-            elif not start_date:
-                sy = SINGLE_YEAR_REGEX.search(line)
-                if sy and len(line.split()) <= 2:
-                    end_date = sy.group(0)
-                    continue
+            sy_match = SINGLE_YEAR_REGEX.search(line)
+            if sy_match and not end_date and len(line.split()) <= 3:
+                end_date = sy_match.group(0)
+                continue
 
             deg_match = DEGREE_REGEX.search(line)
             if deg_match and not degree:
-                degree = deg_match.group(0).strip()
-                paren_match = re.search(r'\((.*?)\)', line)
-                if paren_match:
-                    major = paren_match.group(1).strip()
+                degree = line
+                if " - " in line:
+                    major = line.split(" - ", 1)[1].strip()
                 elif " in " in line.lower():
                     major = re.split(r'\s+in\s+', line, flags=re.I)[1].strip()
                 continue
 
-            if any(k in line.lower() for k in ["university", "college", "school", "institute", "vidyalaya", "academy", "cipet", "bput", "cbse"]) and not school:
+            if any(k in line.lower() for k in ["university", "college", "school", "institute", "vidyalaya", "academy", "polytechnic", "board"]) and not school:
                 school = line
                 continue
-            elif not school and not deg_match and not d_match:
-                if len(line.split()) >= 2 and not line.startswith(('•', '-', '*')):
-                    school = line
+            elif not school and not deg_match and not d_match and not sy_match:
+                school = line
 
         if degree or school:
             results.append({
-                "school": school,
                 "degree": degree or "Degree",
+                "school": school,
                 "major": major,
                 "start_date": start_date,
                 "end_date": end_date
@@ -278,18 +325,24 @@ def parse_experience_detailed(exp_text: str):
     if not raw_lines:
         return []
 
+    # Group lines by job entry
     entries = []
     curr_lines = []
     
     for line in raw_lines:
-        cleaned_line = re.sub(r'^[^\w\s]+', '', line).strip()
-        date_match = DATE_RANGE_REGEX.search(cleaned_line) or YEAR_RANGE_REGEX.search(cleaned_line)
+        clean_l = re.sub(r'^[^\w\s()/,.-]+', '', line).strip()
+        date_match = DATE_RANGE_REGEX.search(clean_l) or YEAR_RANGE_REGEX.search(clean_l)
+        is_role = bool(ROLE_REGEX.search(clean_l) and len(clean_l.split()) <= 4 and not line.startswith(('•', '-', '*', '●')))
         
-        if date_match and len(line.split()) < 10:
-            has_date = any(DATE_RANGE_REGEX.search(l) or YEAR_RANGE_REGEX.search(l) for l in curr_lines)
-            if has_date:
-                entries.append(curr_lines)
-                curr_lines = []
+        has_date = any(DATE_RANGE_REGEX.search(l) or YEAR_RANGE_REGEX.search(l) for l in curr_lines)
+        
+        if date_match and has_date:
+            entries.append(curr_lines)
+            curr_lines = []
+        elif is_role and has_date and len(curr_lines) >= 3:
+            entries.append(curr_lines)
+            curr_lines = []
+            
         curr_lines.append(line)
         
     if curr_lines:
@@ -301,41 +354,119 @@ def parse_experience_detailed(exp_text: str):
         company = ""
         start_date = ""
         end_date = ""
+        location = ""
         bullets = []
         
-        for idx, line in enumerate(lines):
+        for line in lines:
             clean_l = re.sub(r'^[^\w\s()/,.-]+', '', line).strip()
             
+            # Check date line
             d_match = DATE_RANGE_REGEX.search(clean_l) or YEAR_RANGE_REGEX.search(clean_l)
-            if d_match and not start_date and len(clean_l.split()) < 10:
-                start_date, end_date = split_date_range(d_match.group(0))
+            if d_match:
+                raw_date_str = d_match.group(0)
+                if not start_date:
+                    parts = re.split(r'\s*[-–—/]\s*|\s+to\s+', raw_date_str, flags=re.I)
+                    start_date = parts[0].strip()
+                    end_date = parts[1].strip() if len(parts) > 1 else ""
+                
+                # Check if line also contains company / location
+                if '|' in line or ' - ' in line.replace(raw_date_str, ''):
+                    remainder = line.replace(raw_date_str, '').strip(' \t|-–—')
+                    if remainder and not company:
+                        comp_parts = [p.strip() for p in remainder.split(',') if p.strip()]
+                        if comp_parts:
+                            company = comp_parts[0]
+                            if len(comp_parts) > 1:
+                                location = ", ".join(comp_parts[1:])
                 continue
                 
             r_match = ROLE_REGEX.search(clean_l)
-            if r_match and not role and len(clean_l.split()) < 10 and not line.startswith(('•', '-', '*')):
+            if r_match and not role and len(clean_l.split()) <= 6 and not line.startswith(('•', '-', '*', '●')):
                 role = clean_l
                 continue
                 
-            is_comp = any(k in clean_l.lower() for k in ["pvt", "ltd", "services", "consultancy", "solutions", "technologies", "corp", "inc", "llc", "electronics", "addverb", "ciel", "jbsg", "tata"]) or (',' in clean_l and len(clean_l.split()) < 8) or clean_l.lower() in ["online", "remote"]
-            if is_comp and not company and not line.startswith(('•', '-', '*')) and len(clean_l.split()) < 10:
-                company = clean_l
-                continue
-                
+            # Check company (strictly exclude universities/colleges)
+            is_edu = any(k in clean_l.lower() for k in ["university", "college", "school", "institute", "academy"])
+            if not is_edu and not company and not line.startswith(('•', '-', '*', '●')):
+                is_comp = any(k in clean_l.lower() for k in ["pvt", "ltd", "limited", "services", "consultancy", "solutions", "technologies", "corp", "inc", "llc", "tcs", "infosys", "wipro", "cognizant", "ibm", "accenture"])
+                if is_comp or (len(clean_l.split()) >= 2 and len(clean_l.split()) <= 8):
+                    comp_parts = [p.strip() for p in clean_l.split(',') if p.strip()]
+                    company = comp_parts[0]
+                    if len(comp_parts) > 1:
+                        location = ", ".join(comp_parts[1:])
+                    continue
+                    
             if line.startswith(('•', '-', '*', '●')) or len(line.split()) > 7:
                 bullets.append(line.lstrip('•-*● '))
-            elif not company and not role and len(clean_l.split()) >= 2 and len(clean_l.split()) < 10:
-                company = clean_l
 
         if role or company or start_date:
             results.append({
                 "role": role or "Role",
                 "company": company or "Company",
+                "location": location,
                 "start_date": start_date,
                 "end_date": end_date or "Present",
                 "description": "\n".join(bullets),
                 "is_current": "present" in (end_date or "").lower() or "current" in (end_date or "").lower()
             })
     return results
+
+def calculate_experience_years(text: str, experience_detailed: list) -> float:
+    """Calculates total experience years either from explicit resume statement or from job dates."""
+    # 1. Explicit statement scan
+    m = re.search(r'(?i)\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)(?:\s+of)?\s+(?:experience|exp)\b', text)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+
+    # 2. Compute date spans from experience_detailed
+    month_map = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
+    }
+    
+    def parse_dt(dt_str: str, is_end: bool = False):
+        if not dt_str:
+            return None
+        dt_str = dt_str.strip().lower()
+        if "present" in dt_str or "current" in dt_str or "till date" in dt_str:
+            return 2026, 9
+        ym = re.search(r'\b(19|20\d{2})\b', dt_str)
+        if not ym:
+            return None
+        year = int(ym.group(1))
+        month = 12 if is_end else 1
+        for m_name, m_num in month_map.items():
+            if m_name in dt_str:
+                month = m_num
+                break
+        return year, month
+
+    intervals = []
+    for exp in experience_detailed:
+        s = parse_dt(exp.get("start_date"), is_end=False)
+        e = parse_dt(exp.get("end_date"), is_end=True)
+        if s and e:
+            start_m = s[0] * 12 + s[1]
+            end_m = e[0] * 12 + e[1]
+            if end_m >= start_m:
+                intervals.append((start_m, end_m))
+
+    if not intervals:
+        return float(len(experience_detailed))
+
+    intervals.sort()
+    merged = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+
+    total_months = sum(end - start for start, end in merged)
+    return round(total_months / 12.0, 1)
 
 def parse_skills_purified(skills_text: str, full_text: str):
     skills_text = normalize_text_dashes(skills_text)
@@ -348,7 +479,8 @@ def parse_skills_purified(skills_text: str, full_text: str):
         "cooking", "programming", "miscellaneous", "hobbies", "activities", "only", "player",
         "thoroughly", "concept", "made", "learned", "this", "using", "power", "features",
         "showcases", "working", "design", "visually", "format", "the", "true", "belief", "signature",
-        "date", "place", "name"
+        "date", "place", "name", "cloud & tools", "databases", "data analysis", "visualization", "machine learning",
+        "tools", "technologies", "technical skills", "core skills", "tech stack", "functional skills", "model", "server"
     }
     
     domain_terms = [
@@ -537,8 +669,22 @@ class ResumeParser:
             if e.get("degree"): institutes_and_degrees.append(e["degree"])
             if e.get("school"): institutes_and_degrees.append(e["school"])
 
+        # Extract header location & total experience years
+        header_loc = extract_header_location(text)
+        best_location_str = header_loc.get("raw") or ""
+        exp_years = calculate_experience_years(text, experience_detailed)
+
+        # Extract preferred locations if specified in text
+        preferred_locations = []
+        pref_match = re.search(r'(?i)preferred\s+locations?\s*:\s*([^\n|]+)', text)
+        if pref_match:
+            preferred_locations = [p.strip() for p in re.split(r'[/,;]', pref_match.group(1)) if p.strip()]
+
         initial_result = {
             "candidate_name": name or "Unknown",
+            "location": best_location_str or "",
+            "experience_years": exp_years,
+            "preferred_locations": preferred_locations,
             "contact": {
                 "emails": emails,
                 "phones": phones
@@ -564,21 +710,37 @@ class ResumeParser:
 
         # ATS Normalization Post-Processing
         ats_data = {
-            "location": {"id": None, "raw": None},
+            "location": {"id": None, "raw": None, "canonical": None, "city": None, "state": None, "country": None},
             "designations": [],
             "companies": valid_companies,
             "degrees": []
         }
         
-        for loc in extracted_locations:
-            if len(loc) > 30: continue
-            loc_id, loc_canon = normalizer.normalize_location(loc)
-            if loc_id:
-                ats_data["location"] = {"id": loc_id, "raw": loc, "canonical": loc_canon}
-                break
-        if not ats_data["location"]["id"] and extracted_locations:
-            ats_data["location"]["raw"] = extracted_locations[0]
+        # Resolve location from header first, then spaCy entities
+        if header_loc.get("city") or header_loc.get("raw"):
+            cand_loc = header_loc.get("city") or header_loc.get("raw")
+            loc_id, loc_canon = normalizer.normalize_location(cand_loc)
+            ats_data["location"] = {
+                "id": loc_id,
+                "raw": header_loc.get("raw"),
+                "canonical": loc_canon or header_loc.get("city"),
+                "city": header_loc.get("city"),
+                "state": header_loc.get("state"),
+                "country": header_loc.get("country")
+            }
+        elif extracted_locations:
+            for loc in extracted_locations:
+                if len(loc) > 30: continue
+                loc_id, loc_canon = normalizer.normalize_location(loc)
+                if loc_id:
+                    ats_data["location"] = {"id": loc_id, "raw": loc, "canonical": loc_canon, "city": loc, "state": "", "country": ""}
+                    break
+            if not ats_data["location"]["id"] and extracted_locations:
+                ats_data["location"]["raw"] = extracted_locations[0]
             
+        if not initial_result["location"] and ats_data["location"]["raw"]:
+            initial_result["location"] = ats_data["location"]["raw"]
+
         roles_to_check = list(set(detected_roles))
         for role in roles_to_check:
             desig_id, desig_canon = normalizer.normalize_designation(role)
