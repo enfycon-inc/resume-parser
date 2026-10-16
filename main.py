@@ -33,6 +33,28 @@ except Exception as e:
     logger.warning(f"Database connection issues: {e}")
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import Response
+from app.resume_preview import render_preview, MAX_FILE
+from starlette.concurrency import run_in_threadpool
+import asyncio
+from pathlib import Path
+
+preview_lock = asyncio.Semaphore(1)
+
+@app.post('/api/v1/resume-preview')
+async def resume_preview(file: UploadFile = File(...), page: int = Form(0)):
+    content = await file.read(MAX_FILE + 1)
+    try:
+        await asyncio.wait_for(preview_lock.acquire(), timeout=3)
+        try:
+            meta, image = await run_in_threadpool(render_preview, content, Path(file.filename or '').suffix.lower(), page)
+        finally:
+            preview_lock.release()
+        if image is None:
+            return meta
+        return Response(image, media_type='image/png', headers={'Cache-Control': 'no-store'})
+    except Exception:
+        raise HTTPException(status_code=422, detail='Resume cannot be displayed. PDF and DOCX up to 10 MB and 30 pages are supported.')
 
 @app.post("/api/v1/extract")
 async def extract_resume(file: UploadFile = File(...), metadata: str = Form(None)):
