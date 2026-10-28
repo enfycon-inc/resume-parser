@@ -820,21 +820,19 @@ class JobDescriptionParser:
             for ent in doc.ents:
                 if ent.label_ == "SKILL":
                     canon = normalizer.normalize(ent.text) or ent.text.title()
-                    # Check if entity index is in first half of the document text
-                    if ent.start_char < len(text) // 2:
+                    if ent.text.lower() in required_text:
                         primary_skills_set.add(canon)
-                    else:
-                        if canon not in primary_skills_set:
-                            secondary_skills_set.add(canon)
-                            
-        local_primary = sorted(list(primary_skills_set))[:6]
-        local_secondary = sorted(list(secondary_skills_set))[:6]
+                        secondary_skills_set.discard(canon)
+                    elif ent.text.lower() in preferred_text and canon not in primary_skills_set:
+                        secondary_skills_set.add(canon)
+
+        local_primary = sorted(list(primary_skills_set))
+        local_secondary = sorted(list(secondary_skills_set))
         
         # Try to guess job title locally
         local_title = "Unknown"
         
         # First pass: Look for explicit labels anywhere
-        import re
         for line in lines:
             match = re.match(r"(?i)^(?:role|job title|position)\s*:\s*(.+)", line.strip())
             if match and match.group(1).strip():
@@ -861,7 +859,7 @@ class JobDescriptionParser:
         }
         
         # 2. 100% Offline NLP Mode: Balance primary & secondary skills locally
-        result["primarySkills"] = local_primary[:8]
-        result["secondarySkills"] = [s for s in local_secondary if s not in result["primarySkills"]][:8]
+        result["primarySkills"] = local_primary
+        result["secondarySkills"] = [s for s in local_secondary if s not in result["primarySkills"]]
         return result
 
